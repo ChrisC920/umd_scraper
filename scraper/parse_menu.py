@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 
 from .extract import icon_filename_to_tags
+from .normalize import clean_food_name, clean_station
 
 REC_RE = re.compile(r"RecNumAndPort=(\d+)\*(\d+)")
 
@@ -59,14 +60,16 @@ def parse_menu(html: str) -> list[MenuItem]:
             station_strong = tr.select_one("td > p > strong")
             link = tr.select_one("a[href*='label.aspx']")
             if station_strong and not link:
-                current_station = station_strong.get_text(strip=True) or current_station
+                raw_station = station_strong.get_text(strip=True)
+                if raw_station:
+                    current_station = clean_station(raw_station)
                 continue
             if not link:
                 continue
             rp = _parse_rec_href(link.get("href", ""))
             if not rp:
                 continue
-            name = link.get_text(strip=True)
+            name = clean_food_name(link.get_text(strip=True))
             if not name:
                 continue
             allergens, tags = _collect_icons_in(tr)
@@ -87,10 +90,10 @@ def parse_menu(html: str) -> list[MenuItem]:
         rp = _parse_rec_href(a.get("href", ""))
         if not rp:
             continue
-        name = a.get_text(strip=True)
+        name = clean_food_name(a.get_text(strip=True))
         if not name:
             continue
-        station = _nearest_station_heading(a)
+        station = clean_station(_nearest_station_heading(a))
         allergens, tags = _collect_icons_near(a)
         items.append(
             MenuItem(

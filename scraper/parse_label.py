@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup
 
 from .extract import parse_allergens_text
+from .normalize import clean_food_name, clean_ingredients, clean_serving_size
 
 NUM_RE = re.compile(r"([-+]?\d*\.?\d+)")
 
@@ -69,7 +70,7 @@ def parse_label(html: str) -> FoodNutrition:
 
     h2 = soup.find("h2")
     if h2:
-        out.name = h2.get_text(strip=True) or None
+        out.name = clean_food_name(h2.get_text(strip=True))
 
     facts = soup.select_one("table.facts_table")
     if not facts:
@@ -79,13 +80,13 @@ def parse_label(html: str) -> FoodNutrition:
         return out
 
     serv_size_divs = facts.select("div.nutfactsservsize")
-    # First is the "Serving size" header; second (if present) is the value.
     if len(serv_size_divs) >= 2:
-        out.serving_size = serv_size_divs[1].get_text(strip=True) or None
+        out.serving_size = clean_serving_size(serv_size_divs[1].get_text(strip=True))
 
     serv_per = facts.select_one("div.nutfactsservpercont")
     if serv_per:
-        out.servings_per = serv_per.get_text(strip=True) or None
+        from .normalize import collapse_ws
+        out.servings_per = collapse_ws(serv_per.get_text(strip=True))
 
     # Calories per serving — the <p> after the "Calories per serving" header.
     for p in facts.find_all("p"):
@@ -120,7 +121,7 @@ def parse_label(html: str) -> FoodNutrition:
 def _extract_ingredients_allergens(soup: BeautifulSoup, out: FoodNutrition) -> None:
     ing_val = soup.select_one("span.labelingredientsvalue")
     if ing_val:
-        out.ingredients = ing_val.get_text(" ", strip=True) or None
+        out.ingredients = clean_ingredients(ing_val.get_text(" ", strip=True))
     all_val = soup.select_one("span.labelallergensvalue")
     if all_val:
         out.allergens = parse_allergens_text(all_val.get_text(" ", strip=True))
