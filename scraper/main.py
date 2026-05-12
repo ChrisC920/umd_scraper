@@ -3,18 +3,19 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
 from .client import Client
 from .load import (
     get_client,
     log_run,
-    needs_label_refresh,
-    upsert_food_full,
-    upsert_food_stub,
-    upsert_offering,
+    stale_food_ids,
+    upsert_foods_batch,
+    upsert_nutrition_batch,
+    upsert_offerings_batch,
 )
-from .parse_label import parse_label
+from .parse_label import FoodNutrition, parse_label
 from .parse_menu import parse_menu
 
 HALLS = [16, 19, 51]
@@ -23,7 +24,6 @@ log = logging.getLogger("scraper")
 
 
 def meals_for(d: date) -> list[str]:
-    # Sat=5, Sun=6 → brunch + dinner (matches site JS).
     if d.weekday() in (5, 6):
         return ["Brunch", "Dinner"]
     return ["Breakfast", "Lunch", "Dinner"]
@@ -37,11 +37,21 @@ def fmt_date(d: date) -> str:
     return f"{d.month}/{d.day}/{d.year}"
 
 
+def _fetch_label(http: Client, rec_num: int, portion: int) -> FoodNutrition | None:
+    try:
+        html = http.label(rec_num, portion)
+        return parse_label(html)
+    except Exception:
+        log.exception("label fetch failed rec=%s portion=%s", rec_num, portion)
+        return None
+
+
 def run(
     days_ahead: int = 2,
     dry_run: bool = False,
     start_date: date | None = None,
     min_interval: float = 0.5,
+    label_workers: int = 4,
 ) -> int:
     http = Client(min_interval=min_interval)
     sb = None if dry_run else get_client()
@@ -56,7 +66,7 @@ def run(
                 try:
                     html = http.longmenu(hall, fmt_date(served), meal)
                     items = parse_menu(html)
-                except Exception as e:  # network / parse failure
+                except Exception as e:
                     log.exception("fetch failed hall=%s date=%s meal=%s", hall, served, meal)
                     if sb:
                         log_run(
@@ -85,37 +95,91 @@ def run(
                     continue
 
                 log.info("hall=%s date=%s meal=%s items=%d", hall, served, meal, len(items))
+
                 if dry_run:
                     for it in items[:5]:
-                        log.info("  %s [%s] allergens=%s tags=%s", it.name, it.station, it.allergens, it.tags)
+                        log.info(
+                            "  %s [%s] allergens=%s tags=%s",
+                            it.name,
+                            it.station,
+                            it.allergens,
+                            it.tags,
+                        )
                     continue
 
-                for item in items:
-                    try:
-                        food_id = upsert_food_stub(sb, item)
-                        if needs_label_refresh(sb, food_id):
-                            try:
-                                lh = http.label(item.rec_num, item.portion)
-                                nut = parse_label(lh)
-                            except Exception:
-                                log.exception("label fetch failed rec=%s", item.rec_num)
-                                nut = None
-                            if nut is not None:
-                                upsert_food_full(sb, food_id, nut)
-                        upsert_offering(sb, food_id, hall, served, meal_to_db(meal), item.station)
-                    except Exception:
-                        log.exception("upsert failed item=%s", item.name)
-                        errors += 1
+                try:
+                    # 1. Batch-upsert foods + tags, get id map
+                    id_map = upsert_foods_batch(sb, items)
 
-                log_run(
-                    sb,
-                    started_at=started,
-                    hall_id=hall,
-                    served_date=served,
-                    meal=meal_to_db(meal),
-                    status="ok",
-                    items_found=len(items),
-                )
+                    # 2. Find which need label refresh
+                    food_ids = list(id_map.values())
+                    stale = stale_food_ids(sb, food_ids)
+                    stale_items = [
+                        it for it in items
+                        if id_map.get((it.rec_num, it.portion)) in stale
+                    ]
+                    # Dedupe stale items by (rec_num, portion)
+                    seen: set[tuple[int, int]] = set()
+                    stale_items = [
+                        it for it in stale_items
+                        if (it.rec_num, it.portion) not in seen
+                        and not seen.add((it.rec_num, it.portion))
+                    ]
+
+                    # 3. Parallel label fetches (HTTP-bound)
+                    nutrition_by_id: dict[int, FoodNutrition] = {}
+                    if stale_items:
+                        log.info("  fetching %d labels (parallel=%d)", len(stale_items), label_workers)
+                        with ThreadPoolExecutor(max_workers=label_workers) as ex:
+                            futs = {
+                                ex.submit(_fetch_label, http, it.rec_num, it.portion): it
+                                for it in stale_items
+                            }
+                            for fut in as_completed(futs):
+                                it = futs[fut]
+                                nut = fut.result()
+                                if nut is not None:
+                                    fid = id_map[(it.rec_num, it.portion)]
+                                    nutrition_by_id[fid] = nut
+
+                    # 4. Bulk update nutrition
+                    upsert_nutrition_batch(sb, nutrition_by_id)
+
+                    # 5. Bulk insert offerings
+                    offerings = [
+                        (
+                            id_map[(it.rec_num, it.portion)],
+                            hall,
+                            served,
+                            meal_to_db(meal),
+                            it.station,
+                        )
+                        for it in items
+                        if (it.rec_num, it.portion) in id_map
+                    ]
+                    upsert_offerings_batch(sb, offerings)
+
+                    log_run(
+                        sb,
+                        started_at=started,
+                        hall_id=hall,
+                        served_date=served,
+                        meal=meal_to_db(meal),
+                        status="ok",
+                        items_found=len(items),
+                    )
+                except Exception as e:
+                    log.exception("batch load failed hall=%s date=%s meal=%s", hall, served, meal)
+                    log_run(
+                        sb,
+                        started_at=started,
+                        hall_id=hall,
+                        served_date=served,
+                        meal=meal_to_db(meal),
+                        status="error",
+                        error_message=str(e)[:500],
+                    )
+                    errors += 1
 
     return 1 if errors else 0
 
@@ -126,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--start-date", help="ISO date YYYY-MM-DD; default = today")
     p.add_argument("--min-interval", type=float, default=0.5, help="Seconds between requests")
+    p.add_argument("--label-workers", type=int, default=4, help="Parallel label fetches")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
     logging.basicConfig(
@@ -138,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         start_date=sd,
         min_interval=args.min_interval,
+        label_workers=args.label_workers,
     )
 
 

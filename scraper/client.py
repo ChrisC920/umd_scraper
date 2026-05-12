@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 import requests
@@ -17,14 +18,16 @@ class Client:
         self.base = base.rstrip("/")
         self.min_interval = min_interval
         self._last = 0.0
+        self._lock = threading.Lock()
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": UA})
 
     def _throttle(self) -> None:
-        delta = time.monotonic() - self._last
-        if delta < self.min_interval:
-            time.sleep(self.min_interval - delta)
-        self._last = time.monotonic()
+        with self._lock:
+            delta = time.monotonic() - self._last
+            if delta < self.min_interval:
+                time.sleep(self.min_interval - delta)
+            self._last = time.monotonic()
 
     @retry(
         stop=stop_after_attempt(3),
