@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
-from .client import Client
+from .client import Client, SnapshotMissing
 from .load import (
     get_client,
     log_run,
@@ -41,6 +41,12 @@ def _fetch_label(http: Client, rec_num: int, portion: int) -> FoodNutrition | No
     try:
         html = http.label(rec_num, portion)
         return parse_label(html)
+    except SnapshotMissing:
+        # Wayback has no snapshot — mark missing so we don't keep retrying.
+        log.info("snapshot missing rec=%s portion=%s", rec_num, portion)
+        n = FoodNutrition()
+        n.is_empty = True
+        return n
     except Exception:
         log.exception("label fetch failed rec=%s portion=%s", rec_num, portion)
         return None
