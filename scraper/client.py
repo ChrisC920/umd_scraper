@@ -16,6 +16,22 @@ class SnapshotMissing(Exception):
     """Wayback has no snapshot for this URL (redirects to /save/). Not retryable."""
 
 
+class SiteUnavailable(Exception):
+    """Live site is in maintenance mode."""
+
+
+# Markers that confirm the live site is functional.
+LIVE_MARKERS = ("location-select-menu", "longmenu.aspx", "RecNumAndPort")
+# Markers that confirm maintenance page.
+MAINTENANCE_MARKERS = ("We'll be back", "performing some maintenance", "restoring the nutrition site")
+
+
+def is_maintenance(html: str) -> bool:
+    if any(m in html for m in LIVE_MARKERS):
+        return False
+    return any(m in html for m in MAINTENANCE_MARKERS)
+
+
 class Client:
     def __init__(self, base: str = BASE, min_interval: float = 0.5):
         self.base = base.rstrip("/")
@@ -68,3 +84,10 @@ class Client:
 
     def label(self, rec_num: int, portion: int) -> str:
         return self.get("label.aspx", params={"RecNumAndPort": f"{rec_num}*{portion}"})
+
+    def health_check(self) -> bool:
+        """Return True if the live site is up (not in maintenance). Raises on network failure."""
+        html = self.get("/")
+        if is_maintenance(html):
+            return False
+        return any(m in html for m in LIVE_MARKERS)

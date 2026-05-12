@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
 from .client import Client, SnapshotMissing
+from .client import DEFAULT_BASE
 from .load import (
     get_client,
     log_run,
@@ -59,8 +60,21 @@ def run(
     min_interval: float = 0.5,
     label_workers: int = 4,
     skip_labels: bool = False,
+    skip_health_check: bool = False,
 ) -> int:
     http = Client(min_interval=min_interval)
+
+    # Health check: bail if site is in maintenance. Only enforced for live site.
+    # (Wayback bases always pass since archived pages contain the live markers.)
+    if not skip_health_check and http.base.endswith("nutrition.umd.edu"):
+        try:
+            if not http.health_check():
+                log.warning("Site in maintenance mode — skipping run. Base: %s", http.base)
+                return 0
+        except Exception:
+            log.exception("Health check failed; aborting run to avoid bad data")
+            return 0
+
     sb = None if dry_run else get_client()
     base_date = start_date or date.today()
     errors = 0
@@ -216,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-interval", type=float, default=0.5, help="Seconds between requests")
     p.add_argument("--label-workers", type=int, default=4, help="Parallel label fetches")
     p.add_argument("--skip-labels", action="store_true", help="Skip label.aspx fetches (useful for Wayback)")
+    p.add_argument("--skip-health-check", action="store_true", help="Run even if maintenance page detected")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
     logging.basicConfig(
@@ -230,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         min_interval=args.min_interval,
         label_workers=args.label_workers,
         skip_labels=args.skip_labels,
+        skip_health_check=args.skip_health_check,
     )
 
 
