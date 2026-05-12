@@ -58,6 +58,7 @@ def run(
     start_date: date | None = None,
     min_interval: float = 0.5,
     label_workers: int = 4,
+    skip_labels: bool = False,
 ) -> int:
     http = Client(min_interval=min_interval)
     sb = None if dry_run else get_client()
@@ -117,13 +118,16 @@ def run(
                     # 1. Batch-upsert foods + tags, get id map
                     id_map = upsert_foods_batch(sb, items)
 
-                    # 2. Find which need label refresh
-                    food_ids = list(id_map.values())
-                    stale = stale_food_ids(sb, food_ids)
-                    stale_items = [
-                        it for it in items
-                        if id_map.get((it.rec_num, it.portion)) in stale
-                    ]
+                    # 2. Find which need label refresh (skip if requested)
+                    if skip_labels:
+                        stale_items = []
+                    else:
+                        food_ids = list(id_map.values())
+                        stale = stale_food_ids(sb, food_ids)
+                        stale_items = [
+                            it for it in items
+                            if id_map.get((it.rec_num, it.portion)) in stale
+                        ]
                     # Dedupe stale items by (rec_num, portion)
                     seen: set[tuple[int, int]] = set()
                     stale_items = [
@@ -197,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--start-date", help="ISO date YYYY-MM-DD; default = today")
     p.add_argument("--min-interval", type=float, default=0.5, help="Seconds between requests")
     p.add_argument("--label-workers", type=int, default=4, help="Parallel label fetches")
+    p.add_argument("--skip-labels", action="store_true", help="Skip label.aspx fetches (useful for Wayback)")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
     logging.basicConfig(
@@ -210,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         start_date=sd,
         min_interval=args.min_interval,
         label_workers=args.label_workers,
+        skip_labels=args.skip_labels,
     )
 
 

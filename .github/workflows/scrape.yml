@@ -21,6 +21,11 @@ on:
         description: "Seconds between requests (raise for Wayback, e.g. 3.0)"
         required: false
         default: "0.5"
+      skip_labels:
+        description: "Skip label.aspx fetches (Wayback rarely archives them)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: scrape
@@ -47,5 +52,8 @@ jobs:
           ARGS+=(--min-interval "${{ inputs.min_interval || '0.5' }}")
           if [ -n "${{ inputs.start_date }}" ]; then
             ARGS+=(--start-date "${{ inputs.start_date }}")
+          fi
+          if [ "${{ inputs.skip_labels }}" = "true" ]; then
+            ARGS+=(--skip-labels)
           fi
           python -m scraper.main "${ARGS[@]}"
