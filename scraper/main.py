@@ -37,14 +37,19 @@ def fmt_date(d: date) -> str:
     return f"{d.month}/{d.day}/{d.year}"
 
 
-def run(days_ahead: int = 2, dry_run: bool = False) -> int:
-    http = Client()
+def run(
+    days_ahead: int = 2,
+    dry_run: bool = False,
+    start_date: date | None = None,
+    min_interval: float = 0.5,
+) -> int:
+    http = Client(min_interval=min_interval)
     sb = None if dry_run else get_client()
-    today = date.today()
+    base_date = start_date or date.today()
     errors = 0
 
     for offset in range(days_ahead):
-        served = today + timedelta(days=offset)
+        served = base_date + timedelta(days=offset)
         for hall in HALLS:
             for meal in meals_for(served):
                 started = datetime.now(timezone.utc)
@@ -119,13 +124,21 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="umd-nutrition-scraper")
     p.add_argument("--days-ahead", type=int, default=2)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--start-date", help="ISO date YYYY-MM-DD; default = today")
+    p.add_argument("--min-interval", type=float, default=0.5, help="Seconds between requests")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
     logging.basicConfig(
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    return run(days_ahead=args.days_ahead, dry_run=args.dry_run)
+    sd = date.fromisoformat(args.start_date) if args.start_date else None
+    return run(
+        days_ahead=args.days_ahead,
+        dry_run=args.dry_run,
+        start_date=sd,
+        min_interval=args.min_interval,
+    )
 
 
 if __name__ == "__main__":

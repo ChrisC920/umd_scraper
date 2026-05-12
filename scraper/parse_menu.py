@@ -50,7 +50,39 @@ def parse_menu(html: str) -> list[MenuItem]:
                     items.append(item)
         return items
 
-    # longmenu.aspx format may use different markup; fall back to anchors
+    # longmenu.aspx format: table#long-menu-table with station header rows
+    # (<td><p><strong>Station</strong></p></td>) interleaved with item rows.
+    table = soup.select_one("table#long-menu-table")
+    if table:
+        current_station: str | None = None
+        for tr in table.select("tbody > tr"):
+            station_strong = tr.select_one("td > p > strong")
+            link = tr.select_one("a[href*='label.aspx']")
+            if station_strong and not link:
+                current_station = station_strong.get_text(strip=True) or current_station
+                continue
+            if not link:
+                continue
+            rp = _parse_rec_href(link.get("href", ""))
+            if not rp:
+                continue
+            name = link.get_text(strip=True)
+            if not name:
+                continue
+            allergens, tags = _collect_icons_in(tr)
+            items.append(
+                MenuItem(
+                    rec_num=rp[0],
+                    portion=rp[1],
+                    name=name,
+                    station=current_station,
+                    allergens=allergens,
+                    tags=tags,
+                )
+            )
+        return items
+
+    # generic fallback
     for a in soup.select("a[href*='label.aspx']"):
         rp = _parse_rec_href(a.get("href", ""))
         if not rp:
@@ -71,6 +103,19 @@ def parse_menu(html: str) -> list[MenuItem]:
             )
         )
     return items
+
+
+def _collect_icons_in(node) -> tuple[list[str], list[str]]:
+    allergens: list[str] = []
+    tags: list[str] = []
+    for img in node.select("img"):
+        src = img.get("src") or ""
+        a, t = icon_filename_to_tags(src.rsplit("/", 1)[-1])
+        if a and a not in allergens:
+            allergens.append(a)
+        if t and t not in tags:
+            tags.append(t)
+    return allergens, tags
 
 
 def _row_to_item(row, station: str | None) -> MenuItem | None:

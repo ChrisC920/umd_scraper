@@ -9,6 +9,18 @@ on:
         description: "Days ahead to scrape"
         required: false
         default: "2"
+      start_date:
+        description: "ISO date YYYY-MM-DD (default: today). Use to backfill or hit Wayback snapshots."
+        required: false
+        default: ""
+      base_url:
+        description: "Override base URL (e.g. Wayback prefix). Empty = nutrition.umd.edu."
+        required: false
+        default: ""
+      min_interval:
+        description: "Seconds between requests (raise for Wayback, e.g. 3.0)"
+        required: false
+        default: "0.5"
 
 concurrency:
   group: scrape
@@ -17,7 +29,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,4 +41,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python -m scraper.main --days-ahead ${{ inputs.days_ahead || '2' }}
+          SCRAPER_BASE_URL: ${{ inputs.base_url }}
+        run: |
+          ARGS=(--days-ahead "${{ inputs.days_ahead || '2' }}")
+          ARGS+=(--min-interval "${{ inputs.min_interval || '0.5' }}")
+          if [ -n "${{ inputs.start_date }}" ]; then
+            ARGS+=(--start-date "${{ inputs.start_date }}")
+          fi
+          python -m scraper.main "${ARGS[@]}"

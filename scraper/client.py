@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import os
 import time
 
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-BASE = "http://nutrition.umd.edu"
+DEFAULT_BASE = "http://nutrition.umd.edu"
+BASE = os.environ.get("SCRAPER_BASE_URL", DEFAULT_BASE)
 UA = "umd-nutrition-scraper/1.0 (+https://github.com/ChrisC920/umd_scraper)"
 
 
 class Client:
     def __init__(self, base: str = BASE, min_interval: float = 0.5):
-        self.base = base
+        # Strip trailing slash so f"{base}/{path}" doesn't double up.
+        self.base = base.rstrip("/")
         self.min_interval = min_interval
         self._last = 0.0
         self.session = requests.Session()
