@@ -44,7 +44,9 @@ def upsert_foods_batch(sb: Client, items: list[MenuItem]) -> dict[tuple[int, int
         (r["rec_num"], r["portion"]): r["id"] for r in (res.data or [])
     }
 
-    # Batch tag upserts
+    # Batch tag upserts (dedupe to avoid "row affected twice" upsert errors)
+    seen_a: set[tuple[int, str]] = set()
+    seen_t: set[tuple[int, str]] = set()
     allergen_rows = []
     tag_rows = []
     for it in uniq:
@@ -52,8 +54,14 @@ def upsert_foods_batch(sb: Client, items: list[MenuItem]) -> dict[tuple[int, int
         if food_id is None:
             continue
         for a in it.allergens:
+            if (food_id, a) in seen_a:
+                continue
+            seen_a.add((food_id, a))
             allergen_rows.append({"food_id": food_id, "allergen": a})
         for t in it.tags:
+            if (food_id, t) in seen_t:
+                continue
+            seen_t.add((food_id, t))
             tag_rows.append({"food_id": food_id, "tag": t})
     if allergen_rows:
         sb.table("food_allergens").upsert(allergen_rows, on_conflict="food_id,allergen").execute()
@@ -128,21 +136,29 @@ def upsert_offerings_batch(
     sb: Client,
     items: list[tuple[int, int, date, str, str | None]],
 ) -> None:
-    """items: list of (food_id, hall_id, served_date, meal, station)."""
+    """items: list of (food_id, hall_id, served_date, meal, station).
+
+    Dedupes by conflict key (food_id, hall_id, served_date, meal). When the
+    same food appears in multiple stations within one meal, keeps the first
+    station seen — Postgres rejects the upsert otherwise (cannot update the
+    same row twice in one statement).
+    """
     if not items:
         return
-    rows = [
-        {
+    seen: dict[tuple[int, int, str, str], dict] = {}
+    for (f, h, d, m, s) in items:
+        key = (f, h, d.isoformat(), m)
+        if key in seen:
+            continue
+        seen[key] = {
             "food_id": f,
             "hall_id": h,
             "served_date": d.isoformat(),
             "meal": m,
             "station": s,
         }
-        for (f, h, d, m, s) in items
-    ]
     sb.table("menu_offerings").upsert(
-        rows, on_conflict="food_id,hall_id,served_date,meal"
+        list(seen.values()), on_conflict="food_id,hall_id,served_date,meal"
     ).execute()
 
 
