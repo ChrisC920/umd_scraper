@@ -73,6 +73,20 @@ def run(
                 try:
                     html = http.longmenu(hall, fmt_date(served), meal)
                     items = parse_menu(html)
+                except SnapshotMissing as e:
+                    # Wayback has no capture — treat as closed, not an error.
+                    log.info("snapshot missing hall=%s date=%s meal=%s", hall, served, meal)
+                    if sb:
+                        log_run(
+                            sb,
+                            started_at=started,
+                            hall_id=hall,
+                            served_date=served,
+                            meal=meal_to_db(meal),
+                            status="closed",
+                            error_message=f"snapshot missing: {e}"[:500],
+                        )
+                    continue
                 except Exception as e:
                     log.exception("fetch failed hall=%s date=%s meal=%s", hall, served, meal)
                     if sb:
